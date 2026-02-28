@@ -1,0 +1,17 @@
+# Python cache
+__pycache__/
+**/__pycache__/
+
+# Ignore all files under DB directory
+DB/
+data/
+
+# Ignore all files under PDFs directory
+temp_report_pdfs/
+
+# Virtual environments
+.env_server/
+.env_admin/
+
+#VS Code workspace
+examadmin.code-workspace
