@@ -19,6 +19,7 @@ import serverreport as report
 import uuid
 import datetime
 import pprint
+from typing import Optional
 
 from logsystem import logger
 
@@ -496,6 +497,50 @@ class chimera_server_db():
     # ###################################################################
     # ###################################################################
 
+    def _build_session_model(self, record: dict) -> Session:
+        payload = {
+            'uid': str(record.get('uid', '')),
+            'username': str(record.get('username', '')),
+            'set_name': str(record.get('set_name', '')),
+            'set_type': str(record.get('set_type', '')),
+            'device_name': str(record.get('device_name', '')),
+            'start_dt': str(record.get('start_dt', '')),
+            'finalised': bool(record.get('finalised', False)),
+        }
+        return Session.model_validate(payload)
+
+    def _build_rr_case_model(self, uid: str, row: tuple) -> RR_Ans_bare:
+        payload = {
+            'uid': uid,
+            'case_n': int(row[0]),
+            'RR_Normal': bool(row[1]),
+            'RR_Abnormal': bool(row[2]),
+            'RR_Desc': str(row[3]),
+        }
+        return RR_Ans_bare.model_validate(payload)
+
+    def _build_lc_case_model(self, uid: str, row: tuple) -> LC_Ans_bare:
+        payload = {
+            'uid': uid,
+            'case_n': int(row[0]),
+            'LC_OBS': str(row[1]),
+            'LC_INT': str(row[2]),
+            'LC_PDX': str(row[3]),
+            'LC_DDX': str(row[4]),
+            'LC_MX': str(row[5]),
+        }
+        return LC_Ans_bare.model_validate(payload)
+
+    def _validate_session_records(self, records: list[dict]) -> list[dict]:
+        validated_records = []
+        for record in records:
+            try:
+                session_model = self._build_session_model(record)
+                validated_records.append(session_model.model_dump())
+            except Exception as exc:
+                logger.error(f'Failed to validate session record for uid={record.get("uid")}: {exc}')
+        return validated_records
+
     def query_open_sessions(self):
         '''
         Returns a dict of open sessions
@@ -507,7 +552,7 @@ class chimera_server_db():
         '''
         reply = self.cursor.execute(query)
         results = self.fetch_all_as_dict(reply)
-        return results
+        return self._validate_session_records(results)
 
     def query_all_sessions(self):
         '''
@@ -519,7 +564,7 @@ class chimera_server_db():
         '''
         reply = self.cursor.execute(query)
         results = self.fetch_all_as_dict(reply)
-        return results
+        return self._validate_session_records(results)
 
     def query_closed_sessions(self):
         '''
@@ -532,7 +577,23 @@ class chimera_server_db():
         '''
         reply = self.cursor.execute(query)
         results = self.fetch_all_as_dict(reply)
-        return results
+        return self._validate_session_records(results)
+
+    def get_session_by_uid(self, uid: str) -> Optional[Session]:
+        query = '''
+        SELECT uid, username, set_name, set_type, device_name, start_dt, finalised
+        FROM sessions
+        WHERE uid=?
+        '''
+        try:
+            reply = self.cursor.execute(query, (uid,))
+            records = self.fetch_all_as_dict(reply)
+            if not records:
+                return None
+            return self._build_session_model(records[0])
+        except Exception as exc:
+            logger.error(f'Error loading session uid={uid}: {exc}')
+            return None
 
     def get_answers_obj_by_uid(self,
                                uid
@@ -783,6 +844,36 @@ class chimera_server_db():
         for item in dbreply:
             n_list.append(item)
         return n_list
+
+    def get_rr_case_model(self, uid: str, case_n: int) -> Optional[RR_Ans_bare]:
+        query = '''
+        SELECT case_number, rr_normal, rr_abnormal, rr_desc
+        FROM rr_answers
+        WHERE uid=? AND case_number=?
+        '''
+        try:
+            result = self.cursor.execute(query, (uid, case_n)).fetchone()
+            if not result:
+                return None
+            return self._build_rr_case_model(uid, result)
+        except Exception as exc:
+            logger.error(f'Error loading RR case uid={uid} case={case_n}: {exc}')
+            return None
+
+    def get_lc_case_model(self, uid: str, case_n: int) -> Optional[LC_Ans_bare]:
+        query = '''
+        SELECT case_number, LC_OBS, LC_INT, LC_PDX, LC_DDX, LC_MX
+        FROM lc_answers
+        WHERE uid=? AND case_number=?
+        '''
+        try:
+            result = self.cursor.execute(query, (uid, case_n)).fetchone()
+            if not result:
+                return None
+            return self._build_lc_case_model(uid, result)
+        except Exception as exc:
+            logger.error(f'Error loading LC case uid={uid} case={case_n}: {exc}')
+            return None
 
 
 def random_uid():

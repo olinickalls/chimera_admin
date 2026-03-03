@@ -11,16 +11,10 @@ from serverdb import chimera_server_db, get_current_dt_str
 from pydanticmodels import (
     RR_Ans_bare,
     LC_Ans_bare,
+    Session,
 )
 from logsystem import logger
-import sentry_sdk
-
-sentry_sdk.init(
-    dsn="http://a6c87bf3896932238a459148c4d0f87f@192.168.50.177:9000/1", # Replace with your DSN
-    traces_sample_rate=1.0, # Capture 100% of traces for performance monitoring
-    enable_logs=True,
-    # Other options like enable_logs=True can be added here
-)
+import sentry
 
 from serverside_report import create_answer_pdf
 from serverconstants import (
@@ -441,53 +435,70 @@ def sessions_page():
             """Generate PDF report for the selected session and download it in the browser"""
             try:
                 uid = session['uid']
-                username = session['username']
-                set_name = session['set_name']
+
+                session_model = db.get_session_by_uid(uid)
+                if session_model is None:
+                    session_model = Session.model_validate({
+                        'uid': uid,
+                        'username': session.get('username', ''),
+                        'set_name': session.get('set_name', ''),
+                        'set_type': session.get('set_type', ''),
+                        'device_name': session.get('device_name', ''),
+                        'start_dt': session.get('start_dt', ''),
+                        'finalised': session.get('finalised') == '✓',
+                    })
+
+                username = session_model.username
+                set_name = session_model.set_name
 
                 ui.notify(f'PDF generation started for {username} - {set_name}', type='positive')
                 print(f'This is what my session data looks like: \nUID={uid}, Username={username}, Set Name={set_name}')
                 print(f'Complete dump of session data: {session}')
 
                 answers = {
-                    'type': session['set_type'],
-                    'set_name': session['set_name'],
-                    'candidateID': session['username'],
-                    'device_name': session['device_name'],
-                    'start_time': session['start_dt'],
+                    'type': session_model.set_type,
+                    'set_name': session_model.set_name,
+                    'candidateID': session_model.username,
+                    'device_name': session_model.device_name,
+                    'start_time': session_model.start_dt,
                     'case': {}
                 }
 
-                if session['set_type'] == 'RR':
+                if session_model.set_type == 'RR':
                     cases = db.get_rr_cases_by_uid(uid)
 
                     for case_n in cases:
-                        case_data = db.get_rr_case(uid, case_n)
+                        case_data = db.get_rr_case_model(uid, case_n)
+                        if case_data is None:
+                            continue
                         case_dict = {
-                            RR_NORMAL: True if case_data[0][1] else False,
-                            RR_ABNORMAL: True if case_data[0][2] else False,
-                            RR_DESC: case_data[0][3]
+                            RR_NORMAL: case_data.RR_Normal,
+                            RR_ABNORMAL: case_data.RR_Abnormal,
+                            RR_DESC: case_data.RR_Desc
                         }
                         answers['case'][case_n] = case_dict
 
-                elif session['set_type'] == 'LC':
+                elif session_model.set_type == 'LC':
                     cases = db.get_lc_cases_by_uid(uid)
 
                     for case_n in cases:
-                        case_data = db.get_lc_case(uid, case_n)
+                        case_data = db.get_lc_case_model(uid, case_n)
+                        if case_data is None:
+                            continue
                         print(f'Case_data: {case_data}')
                         case_dict = {
-                            LC_OBS: case_data[1],
-                            LC_INT: case_data[2],
-                            LC_PDX: case_data[3],
-                            LC_DDX: case_data[4],
-                            LC_MX: case_data[5]
+                            LC_OBS: case_data.LC_OBS,
+                            LC_INT: case_data.LC_INT,
+                            LC_PDX: case_data.LC_PDX,
+                            LC_DDX: case_data.LC_DDX,
+                            LC_MX: case_data.LC_MX
                         }
                         answers['case'][case_n] = case_dict
 
                 else:
-                    ui.notify(f'Unknown set type: {session["set_type"]}', type='negative')
-                    print(f'Unknown set type for session {uid}: {session["set_type"]}')
-                    raise ValueError(f'Unknown set type: {session["set_type"]}')
+                    ui.notify(f'Unknown set type: {session_model.set_type}', type='negative')
+                    print(f'Unknown set type for session {uid}: {session_model.set_type}')
+                    raise ValueError(f'Unknown set type: {session_model.set_type}')
 
                 print(f'\nComplete dump of ANSWER data: {answers}')
 
@@ -837,13 +848,13 @@ def rr_answers_page():
                 
                 rows = []
                 for case_n in cases:
-                    case_data = db.get_rr_case(uid, case_n)
+                    case_data = db.get_rr_case_model(uid, case_n)
                     if case_data:
                         rows.append({
-                            'case_number': case_data[0][0],
-                            'rr_normal': '✓' if case_data[0][1] else '✗',
-                            'rr_abnormal': '✓' if case_data[0][2] else '✗',
-                            'rr_desc': case_data[0][3],
+                            'case_number': case_data.case_n,
+                            'rr_normal': '✓' if case_data.RR_Normal else '✗',
+                            'rr_abnormal': '✓' if case_data.RR_Abnormal else '✗',
+                            'rr_desc': case_data.RR_Desc,
                             'uid': uid
                         })
                 
@@ -1015,24 +1026,21 @@ def lc_answers_page():
                 
                 rows = []
                 for case_n in cases:
-                    # Fetch LC case data
-                    query = "SELECT case_number, LC_OBS, LC_INT, LC_PDX, LC_DDX, LC_MX FROM lc_answers WHERE uid=? AND case_number=?"
-                    result = db.cursor.execute(query, (uid, case_n))
-                    case_data = result.fetchone()
+                    case_data = db.get_lc_case_model(uid, case_n)
                     
                     if case_data:
                         rows.append({
-                            'case_number': case_data[0],
-                            'LC_OBS': case_data[1][:50] + '...' if len(case_data[1]) > 50 else case_data[1],
-                            'LC_INT': case_data[2][:50] + '...' if len(case_data[2]) > 50 else case_data[2],
-                            'LC_PDX': case_data[3][:50] + '...' if len(case_data[3]) > 50 else case_data[3],
-                            'LC_DDX': case_data[4][:50] + '...' if len(case_data[4]) > 50 else case_data[4],
-                            'LC_MX': case_data[5][:50] + '...' if len(case_data[5]) > 50 else case_data[5],
-                            'LC_OBS_full': case_data[1],
-                            'LC_INT_full': case_data[2],
-                            'LC_PDX_full': case_data[3],
-                            'LC_DDX_full': case_data[4],
-                            'LC_MX_full': case_data[5],
+                            'case_number': case_data.case_n,
+                            'LC_OBS': case_data.LC_OBS[:50] + '...' if len(case_data.LC_OBS) > 50 else case_data.LC_OBS,
+                            'LC_INT': case_data.LC_INT[:50] + '...' if len(case_data.LC_INT) > 50 else case_data.LC_INT,
+                            'LC_PDX': case_data.LC_PDX[:50] + '...' if len(case_data.LC_PDX) > 50 else case_data.LC_PDX,
+                            'LC_DDX': case_data.LC_DDX[:50] + '...' if len(case_data.LC_DDX) > 50 else case_data.LC_DDX,
+                            'LC_MX': case_data.LC_MX[:50] + '...' if len(case_data.LC_MX) > 50 else case_data.LC_MX,
+                            'LC_OBS_full': case_data.LC_OBS,
+                            'LC_INT_full': case_data.LC_INT,
+                            'LC_PDX_full': case_data.LC_PDX,
+                            'LC_DDX_full': case_data.LC_DDX,
+                            'LC_MX_full': case_data.LC_MX,
                             'uid': uid
                         })
                 
