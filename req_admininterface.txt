@@ -1,5 +1,0 @@
-nicegui
-pydantic
-requests
-reportlab
-sentry-sdk

@@ -12,21 +12,34 @@ Web-based admin interface for managing the exam administration database.
 
 ## Installation
 
-1. Ensure Python 3.8+ is installed
-2. Install required packages:
-   ```bash
-   pip install nicegui pydantic
-   ```
+Install [uv](https://docs.astral.sh/uv/); it provisions Python 3.11+ and all
+dependencies automatically.
 
 ## Running the Admin Dashboard
 
-Start the web server:
+From a clone of the repository:
 
 ```bash
-python adminUI.py
+uv run admin_ui.py
 ```
 
-The dashboard will automatically open in your default browser at `http://localhost:8080`
+The dashboard will automatically open in your default browser at `http://localhost:8080`.
+
+## Development
+
+```bash
+uv run python -m unittest discover -s tests   # run tests
+uv build                                      # build wheel + sdist into dist/
+```
+
+A built wheel can be installed anywhere (`uv tool install dist/*.whl`) and
+started with the `exam-admin` command.
+
+## Logging
+
+Console and rotating file logs are provided by Loguru. Logs default to
+`logs/examadmin.log`. Configure them with `EXAMADMIN_LOG_LEVEL`,
+`EXAMADMIN_LOG_DIR`, `EXAMADMIN_LOG_ROTATION`, and `EXAMADMIN_LOG_RETENTION`.
 
 ## Usage
 
@@ -50,8 +63,11 @@ The dashboard will automatically open in your default browser at `http://localho
 
 ## Database
 
-The application connects to the local SQLite database defined in `serverdb.py`. 
-By default, it uses `chimera_server.db` in the `data/` directory.
+The application connects directly to the exam server database and will not
+start if it is missing. By default it looks for
+`../examserver/DB/chimera_server.db` relative to the working directory. Set
+`EXAMADMIN_DB_TARGET` to the active database file when it is elsewhere.
+Logs (`logs/`), `data/` and `temp_report_pdfs/` are created in the working directory.
 
 ## Navigation
 

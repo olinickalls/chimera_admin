@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Dict
+from typing import Dict, Optional
 
 # # For when a single RR case is sent
 # class RR_Ans(BaseModel):
@@ -76,6 +76,9 @@ class Session(BaseModel):
     device_name: str
     start_dt: str
     finalised: bool
+    final_dt: Optional[str] = None
+    pdf: bool = False
+    pdf_dt: Optional[str] = None
 
 class New_Session_Data(BaseModel):
     username: str

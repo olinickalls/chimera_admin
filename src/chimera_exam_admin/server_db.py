@@ -1,13 +1,5 @@
-from serverconstants import (
+from .server_constants import (
     DEFAULT_DB_PATH,
-    DEBUG,
-    DEBUG_RR_CASE,
-    DEBUG_RR_SET,
-    DEBUG_LC_CASE,
-    DEBUG_LC_SET,
-    DEBUG_REPORT,
-    DEBUG_FINALISE,
-    DEBUG_NEW_SESSION,
     RR_NORMAL,
     RR_ABNORMAL,
     RR_DESC
@@ -15,22 +7,21 @@ from serverconstants import (
 from pathlib import Path
 import sqlite3
 from sqlite3 import Error
-import serverreport as report
+from . import server_report as report
 import uuid
 import datetime
 import pprint
 from typing import Optional
 
-from logsystem import logger
+from .log_system import logger
 
-from pydanticmodels import (
+from .pydantic_models import (
     # RR_Ans,  # Can this be removed?
     RR_Ans_bare,
     RR_Set,
     LC_Set,
     LC_Ans_bare,
     Session,
-    New_Session_Data,
     Finalise_Session_Detail
 )
 
@@ -95,7 +86,9 @@ class chimera_server_db():
                                         "device_name TEXT NOT NULL, "
                                         "start_dt TEXT NOT NULL,"
                                         "finalised INTEGER NOT NULL,"  # bool
-                                        "pdf_filepath STRING"
+                                        "final_dt TIMESTAMP NULL,"
+                                        "pdf INTEGER NOT NULL DEFAULT 0,"
+                                        "pdf_dt TIMESTAMP NULL"
                                         ");")
             self.cursor.execute(SQL_create_sessions_table)
     
@@ -137,10 +130,38 @@ class chimera_server_db():
             self.connection = sqlite3.connect(self.db_fp)
             self.cursor = self.connection.cursor()
             logger.info(f'***[DB]*** Connected to DB {self.db_fp}')
+            self._migrate_sessions_pdf_tracking()
+            self._migrate_sessions_final_tracking()
         except Error as e:
             logger.error(f"The error '{e}' occurred")
         except Exception as e:
             logger.error(f"The Exception '{e}' occurred")
+
+    def _migrate_sessions_pdf_tracking(self):
+        """Add PDF tracking columns to databases created by older versions."""
+        columns = {
+            row[1] for row in self.connection.execute('PRAGMA table_info(sessions)')
+        }
+        if 'pdf' not in columns:
+            self.connection.execute(
+                'ALTER TABLE sessions ADD COLUMN pdf INTEGER NOT NULL DEFAULT 0'
+            )
+        if 'pdf_dt' not in columns:
+            self.connection.execute(
+                'ALTER TABLE sessions ADD COLUMN pdf_dt TIMESTAMP NULL'
+            )
+        self.connection.commit()
+
+    def _migrate_sessions_final_tracking(self):
+        """Add finalisation tracking to databases created by older versions."""
+        columns = {
+            row[1] for row in self.connection.execute('PRAGMA table_info(sessions)')
+        }
+        if 'final_dt' not in columns:
+            self.connection.execute(
+                'ALTER TABLE sessions ADD COLUMN final_dt TIMESTAMP NULL'
+            )
+        self.connection.commit()
 
 
     def populate_fake_data(self, rr_sets=1, lc_sets=1):
@@ -206,10 +227,11 @@ class chimera_server_db():
         'Close the session by setting the 'finalised' flag in sesions table.
         '''
         logger.debug('finalise_session')
+        final_dt = datetime.datetime.now().isoformat(timespec='seconds')
         query = ("UPDATE sessions"
-                " SET finalised=True"
+            " SET finalised=True, final_dt=?"
                 " WHERE uid=?;")
-        params = (sess.uid,)
+        params = (final_dt, sess.uid)
         msg = f'Finalising session uid={sess.uid}'
 
         db_response = self.execute_param_query(query, params=params, txt=msg)
@@ -222,6 +244,66 @@ class chimera_server_db():
 
         else:
             return str(db_response)
+
+    def mark_pdf_created(self, uid: str, created_at: str | None = None) -> str:
+        pdf_dt = created_at or datetime.datetime.now().isoformat(timespec='seconds')
+        result = self.execute_param_query(
+            'UPDATE sessions SET pdf=1, pdf_dt=? WHERE uid=?',
+            (pdf_dt, uid),
+            txt='Mark PDF created',
+        )
+        if isinstance(result, Exception):
+            raise result
+        if result.rowcount != 1:
+            raise LookupError(f'Session not found while marking PDF: {uid}')
+        return pdf_dt
+
+    def update_session_tracking(
+        self,
+        uid: str,
+        final_dt: str | None,
+        pdf: bool,
+        pdf_dt: str | None,
+    ) -> None:
+        result = self.execute_param_query(
+            'UPDATE sessions SET final_dt=?, pdf=?, pdf_dt=? WHERE uid=?',
+            (final_dt, int(pdf), pdf_dt, uid),
+            txt='Update session tracking',
+        )
+        if isinstance(result, Exception):
+            raise result
+        if result.rowcount != 1:
+            raise LookupError(f'Session not found while updating tracking: {uid}')
+
+    def delete_sessions(self, uids):
+        """Delete sessions and their answers in one transaction."""
+        unique_uids = list(dict.fromkeys(uids))
+        if not unique_uids:
+            return 0
+
+        placeholders = ', '.join('?' for _ in unique_uids)
+        try:
+            self.cursor.execute('BEGIN')
+            self.cursor.execute(
+                f'DELETE FROM rr_answers WHERE uid IN ({placeholders})',
+                unique_uids,
+            )
+            self.cursor.execute(
+                f'DELETE FROM lc_answers WHERE uid IN ({placeholders})',
+                unique_uids,
+            )
+            result = self.cursor.execute(
+                f'DELETE FROM sessions WHERE uid IN ({placeholders})',
+                unique_uids,
+            )
+            deleted_count = result.rowcount
+            self.connection.commit()
+            logger.info('Sessions deleted | count={}', deleted_count)
+            return deleted_count
+        except sqlite3.Error:
+            self.connection.rollback()
+            logger.exception('Failed to delete sessions | requested_count={}', len(unique_uids))
+            raise
 
     # ###################################################################
     # ########      RAPID REPORTING                              ########
@@ -506,6 +588,9 @@ class chimera_server_db():
             'device_name': str(record.get('device_name', '')),
             'start_dt': str(record.get('start_dt', '')),
             'finalised': bool(record.get('finalised', False)),
+            'final_dt': record.get('final_dt'),
+            'pdf': bool(record.get('pdf', False)),
+            'pdf_dt': record.get('pdf_dt'),
         }
         return Session.model_validate(payload)
 
@@ -546,7 +631,8 @@ class chimera_server_db():
         Returns a dict of open sessions
         '''
         query = '''
-        SELECT uid, username, set_name, set_type, device_name, start_dt, finalised
+         SELECT uid, username, set_name, set_type, device_name, start_dt, finalised,
+             final_dt, pdf, pdf_dt
         FROM sessions
         WHERE finalised=0
         '''
@@ -559,7 +645,8 @@ class chimera_server_db():
         Returns a dict of all sessions
         '''
         query = '''
-        SELECT uid, username, set_name, set_type, device_name, start_dt, finalised
+         SELECT uid, username, set_name, set_type, device_name, start_dt, finalised,
+             final_dt, pdf, pdf_dt
         FROM sessions
         '''
         reply = self.cursor.execute(query)
@@ -571,7 +658,8 @@ class chimera_server_db():
         Returns a dict of closed sessions
         '''
         query = '''
-        SELECT uid, username, set_name, set_type, device_name, start_dt, finalised
+         SELECT uid, username, set_name, set_type, device_name, start_dt, finalised,
+             final_dt, pdf, pdf_dt
         FROM sessions
         WHERE finalised=1
         '''
@@ -581,7 +669,8 @@ class chimera_server_db():
 
     def get_session_by_uid(self, uid: str) -> Optional[Session]:
         query = '''
-        SELECT uid, username, set_name, set_type, device_name, start_dt, finalised
+         SELECT uid, username, set_name, set_type, device_name, start_dt, finalised,
+             final_dt, pdf, pdf_dt
         FROM sessions
         WHERE uid=?
         '''

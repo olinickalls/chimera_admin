@@ -1,6 +1,7 @@
 # Python cache
 __pycache__/
 **/__pycache__/
+*.egg-info/
 
 # Ignore all files under DB directory
 DB/
@@ -8,10 +9,17 @@ data/
 
 # Ignore all files under PDFs directory
 temp_report_pdfs/
+logs/
 
 # Virtual environments
+.venv/
 .env_server/
 .env_admin/
+
+# Build and test artifacts
+build/
+dist/
+.pytest_cache/
 
 #VS Code workspace
 examadmin.code-workspace

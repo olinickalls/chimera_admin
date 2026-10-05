@@ -4,7 +4,7 @@ Server constants for exam administration system
 from pathlib import Path
 
 # Database path
-DEFAULT_DB_PATH = Path(__file__).parent / 'data'
+DEFAULT_DB_PATH = Path.cwd() / 'data'
 
 # Debug flags
 DEBUG = False

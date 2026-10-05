@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chimera-exam-admin"
+version = "0.1.0"
+description = "NiceGUI administration interface for the Chimera exam server"
+readme = "README_ADMIN.md"
+requires-python = ">=3.11"
+dependencies = [
+    "loguru>=0.7,<1",
+    "nicegui>=3.3,<4",
+    "pydantic>=2.7,<3",
+    "reportlab>=4,<5",
+]
+
+[project.scripts]
+exam-admin = "chimera_exam_admin.admin_ui:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

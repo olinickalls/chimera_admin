@@ -1,0 +1,1 @@
+"""Exam administration application."""

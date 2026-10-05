@@ -5,19 +5,21 @@ Built with NiceGUI - Compatible with NiceGUI 3.3+
 
 from nicegui import ui
 import datetime
+import io
 import time
 import os
-from serverdb import chimera_server_db, get_current_dt_str
-from pydanticmodels import (
+import zipfile
+from pathlib import Path
+from .server_db import chimera_server_db, get_current_dt_str
+from .pydantic_models import (
     RR_Ans_bare,
     LC_Ans_bare,
-    Session,
 )
-from logsystem import logger
-import sentry
+from .log_system import logger
+from .utils import get_safe_filename, matches_pdf_filter
 
-from serverside_report import create_answer_pdf
-from serverconstants import (
+from .server_side_report import create_answer_pdf
+from .server_constants import (
     RR_NORMAL,
     RR_ABNORMAL,
     RR_DESC,
@@ -25,17 +27,17 @@ from serverconstants import (
     LC_INT,
     LC_PDX,
     LC_DDX,
-    LC_MX,
-    ANS_BLANK,
-    LC_OBS_TITLE,
-    LC_INT_TITLE,
-    LC_PDX_TITLE,
-    LC_DDX_TITLE,
-    LC_MX_TITLE
+    LC_MX
 )
 
 # Initialize database
-DB_TARGET = os.getenv('EXAMADMIN_DB_TARGET', r'C:\pycode\examserver\DB\chimera_server.db')
+DEFAULT_DB_TARGET = Path.cwd().parent / 'examserver' / 'DB' / 'chimera_server.db'
+DB_TARGET = Path(os.getenv('EXAMADMIN_DB_TARGET', DEFAULT_DB_TARGET)).expanduser().resolve()
+if not DB_TARGET.is_file():
+    raise FileNotFoundError(
+        f'Exam server database not found: {DB_TARGET}. '
+        'Set EXAMADMIN_DB_TARGET to the active chimera_server.db file.'
+    )
 db = chimera_server_db(DB_TARGET, test_on_start=False, clean_start=False)
 
 
@@ -61,8 +63,20 @@ def sessions_page():
         
         # Filter buttons
         with ui.row().classes('mb-4'):
+            selected_sessions = {'rows': []}
+            bulk_controls = {}
+
+            def update_selected_sessions(rows):
+                selected_sessions['rows'] = list(rows)
+                count = len(selected_sessions['rows'])
+                if 'count' in bulk_controls:
+                    bulk_controls['count'].set_text(f'{count} selected')
+                    bulk_controls['print'].set_enabled(count > 0)
+                    bulk_controls['delete'].set_enabled(count > 0)
+
             filter_state = {
                 'session_status': 'all',
+                'pdf_status': 'all',
                 'date_mode': 'all',
                 'last_n_days': 7,
                 'set_type': None,
@@ -85,6 +99,26 @@ def sessions_page():
                     return datetime.datetime.strptime(dt_text, '%Y-%m-%d %H:%M:%S')
                 except ValueError:
                     return None
+
+            def format_session_dt(dt_value):
+                session_dt = parse_session_dt(dt_value)
+                if session_dt is None:
+                    return str(dt_value or '')
+                return session_dt.replace(microsecond=0).isoformat(sep=' ')
+
+            def datetime_input_value(dt_value):
+                session_dt = parse_session_dt(dt_value)
+                if session_dt is None:
+                    return ''
+                return session_dt.replace(microsecond=0).isoformat(timespec='seconds')
+
+            def normalise_datetime_input(dt_value):
+                if not dt_value:
+                    return None
+                session_dt = parse_session_dt(dt_value)
+                if session_dt is None:
+                    raise ValueError(f'Invalid date and time: {dt_value}')
+                return session_dt.replace(microsecond=0).isoformat(timespec='seconds')
 
             def passes_date_filter(session):
                 mode = filter_state['date_mode']
@@ -142,6 +176,7 @@ def sessions_page():
                 select_widget.update()
 
             def refresh_table():
+                update_selected_sessions([])
                 table_container.clear()
                 with table_container:
                     create_sessions_table(filter_state['session_status'])
@@ -263,6 +298,7 @@ def sessions_page():
             ui.button('Clear filters', on_click=clear_dropdown_filters).props('outline')
 
         quick_final_buttons = {}
+        quick_pdf_buttons = {}
         quick_range_buttons = {}
         quick_type_buttons = {}
 
@@ -282,6 +318,11 @@ def sessions_page():
             active_key = status_key_map.get(selected_status, 'all')
             for key, button in quick_final_buttons.items():
                 set_quick_button_style(button, key == active_key)
+
+        def update_quick_pdf_buttons():
+            selected_status = filter_state['pdf_status']
+            for key, button in quick_pdf_buttons.items():
+                set_quick_button_style(button, key == selected_status)
 
         def get_active_quick_range() -> str | None:
             mode = filter_state['date_mode']
@@ -327,11 +368,20 @@ def sessions_page():
             refresh_table()
             update_quick_type_buttons()
 
+        def set_pdf_filter(pdf_status: str):
+            filter_state['pdf_status'] = pdf_status
+            refresh_table()
+            update_quick_pdf_buttons()
+
         with ui.row().classes('mb-3 items-center gap-2'):
             ui.label('Final').classes('text-grey-7')
             quick_final_buttons['yes'] = ui.button('✓', on_click=lambda: set_session_filter('closed')).props('dense size=sm')
             quick_final_buttons['no'] = ui.button('✗', on_click=lambda: set_session_filter('open')).props('dense size=sm')
             quick_final_buttons['all'] = ui.button('All', on_click=lambda: set_session_filter('all')).props('dense size=sm')
+            ui.label('PDF').classes('text-grey-7 ml-4')
+            quick_pdf_buttons['yes'] = ui.button('✓', on_click=lambda: set_pdf_filter('yes')).props('dense size=sm')
+            quick_pdf_buttons['no'] = ui.button('✗', on_click=lambda: set_pdf_filter('no')).props('dense size=sm')
+            quick_pdf_buttons['all'] = ui.button('All', on_click=lambda: set_pdf_filter('all')).props('dense size=sm')
             ui.label('Quick range').classes('text-grey-7 ml-4')
             quick_range_buttons['today'] = ui.button('Today', on_click=lambda: set_date_filter('today')).props('dense size=sm')
             quick_range_buttons['yesterday'] = ui.button('Yesterday', on_click=lambda: set_date_filter('yesterday')).props('dense size=sm')
@@ -344,8 +394,24 @@ def sessions_page():
             quick_type_buttons['all'] = ui.button('All', on_click=lambda: set_type_filter('all')).props('dense size=sm')
 
         update_quick_final_buttons()
+        update_quick_pdf_buttons()
         update_quick_range_buttons()
         update_quick_type_buttons()
+
+        with ui.row().classes('mb-3 items-center gap-2'):
+            bulk_controls['count'] = ui.label('0 selected').classes('text-grey-7 mr-2')
+            bulk_controls['print'] = ui.button(
+                'Print selected',
+                icon='print',
+                on_click=lambda: show_bulk_print_dialog(),
+            ).props('outline')
+            bulk_controls['delete'] = ui.button(
+                'Delete selected',
+                icon='delete',
+                on_click=lambda: show_delete_sessions_dialog(selected_sessions['rows']),
+            ).props('outline color=negative')
+            bulk_controls['print'].disable()
+            bulk_controls['delete'].disable()
 
         # Table container
         table_container = ui.column().classes('w-full')
@@ -359,6 +425,7 @@ def sessions_page():
                 sessions = db.query_all_sessions()
 
             sessions = [s for s in sessions if passes_date_filter(s) and passes_type_filter(s)]
+            sessions = [s for s in sessions if matches_pdf_filter(s, filter_state['pdf_status'])]
             sessions = [s for s in sessions if passes_detail_filters(s)]
 
             sync_select_options(username_select, [s.get('username') for s in sessions], 'username')
@@ -372,6 +439,9 @@ def sessions_page():
                 {'name': 'device_name', 'label': 'Device', 'field': 'device_name', 'align': 'left', 'sortable': True},
                 {'name': 'start_dt', 'label': 'Start Time', 'field': 'start_dt', 'align': 'left', 'sortable': True},
                 {'name': 'finalised', 'label': 'Finalised', 'field': 'finalised', 'align': 'left', 'sortable': True},
+                {'name': 'final_dt', 'label': 'Final Time', 'field': 'final_dt', 'align': 'left', 'sortable': True},
+                {'name': 'pdf', 'label': 'PDF', 'field': 'pdf', 'align': 'left', 'sortable': True},
+                {'name': 'pdf_dt', 'label': 'PDF Created', 'field': 'pdf_dt', 'align': 'left', 'sortable': True},
                 {'name': 'actions', 'label': 'Actions', 'field': 'actions', 'align': 'center'},
                 {'name': 'uid', 'label': 'UID', 'field': 'uid', 'align': 'left', 'sortable': True},
             ]
@@ -387,8 +457,11 @@ def sessions_page():
                         'set_name': s['set_name'],
                         'set_type': s['set_type'],
                         'device_name': s['device_name'],
-                        'start_dt': s['start_dt'],
+                        'start_dt': format_session_dt(s['start_dt']),
                         'finalised': '✓' if s['finalised'] else '✗',
+                        'final_dt': format_session_dt(s['final_dt']),
+                        'pdf': '✓' if s['pdf'] else '✗',
+                        'pdf_dt': format_session_dt(s['pdf_dt']),
                     })
             else:
                 rows.append({
@@ -399,10 +472,19 @@ def sessions_page():
                     'device_name': '',
                     'start_dt': '',
                     'finalised': '',
+                    'final_dt': '',
+                    'pdf': '',
+                    'pdf_dt': '',
                     'actions': '',
                 })
             
-            table = ui.table(columns=columns, rows=rows, row_key='uid').classes('w-full')
+            table = ui.table(
+                columns=columns,
+                rows=rows,
+                row_key='uid',
+                selection='multiple' if has_rows else None,
+                on_select=lambda event: update_selected_sessions(event.selection),
+            ).classes('w-full')
             if has_rows:
                 table.add_slot('body-cell-actions', '''
                     <q-td :props="props">
@@ -431,98 +513,147 @@ def sessions_page():
         with table_container:
             create_sessions_table(filter_state['session_status'])
         
-        def generate_pdf_for_session(session):
-            """Generate PDF report for the selected session and download it in the browser"""
-            try:
-                uid = session['uid']
+        def create_pdf_for_session(session) -> Path:
+            uid = session['uid']
+            session_model = db.get_session_by_uid(uid)
+            if session_model is None:
+                raise ValueError(f'Session not found: {uid}')
 
-                session_model = db.get_session_by_uid(uid)
-                if session_model is None:
-                    session_model = Session.model_validate({
-                        'uid': uid,
-                        'username': session.get('username', ''),
-                        'set_name': session.get('set_name', ''),
-                        'set_type': session.get('set_type', ''),
-                        'device_name': session.get('device_name', ''),
-                        'start_dt': session.get('start_dt', ''),
-                        'finalised': session.get('finalised') == '✓',
-                    })
+            answers = {
+                'type': session_model.set_type,
+                'set_name': session_model.set_name,
+                'candidateID': session_model.username,
+                'device_name': session_model.device_name,
+                'start_time': session_model.start_dt,
+                'case': {},
+            }
 
-                username = session_model.username
-                set_name = session_model.set_name
-
-                ui.notify(f'PDF generation started for {username} - {set_name}', type='positive')
-                print(f'This is what my session data looks like: \nUID={uid}, Username={username}, Set Name={set_name}')
-                print(f'Complete dump of session data: {session}')
-
-                answers = {
-                    'type': session_model.set_type,
-                    'set_name': session_model.set_name,
-                    'candidateID': session_model.username,
-                    'device_name': session_model.device_name,
-                    'start_time': session_model.start_dt,
-                    'case': {}
-                }
-
-                if session_model.set_type == 'RR':
-                    cases = db.get_rr_cases_by_uid(uid)
-
-                    for case_n in cases:
-                        case_data = db.get_rr_case_model(uid, case_n)
-                        if case_data is None:
-                            continue
-                        case_dict = {
+            if session_model.set_type == 'RR':
+                for case_n in db.get_rr_cases_by_uid(uid):
+                    case_data = db.get_rr_case_model(uid, case_n)
+                    if case_data is not None:
+                        answers['case'][case_n] = {
                             RR_NORMAL: case_data.RR_Normal,
                             RR_ABNORMAL: case_data.RR_Abnormal,
-                            RR_DESC: case_data.RR_Desc
+                            RR_DESC: case_data.RR_Desc,
                         }
-                        answers['case'][case_n] = case_dict
-
-                elif session_model.set_type == 'LC':
-                    cases = db.get_lc_cases_by_uid(uid)
-
-                    for case_n in cases:
-                        case_data = db.get_lc_case_model(uid, case_n)
-                        if case_data is None:
-                            continue
-                        print(f'Case_data: {case_data}')
-                        case_dict = {
+            elif session_model.set_type == 'LC':
+                for case_n in db.get_lc_cases_by_uid(uid):
+                    case_data = db.get_lc_case_model(uid, case_n)
+                    if case_data is not None:
+                        answers['case'][case_n] = {
                             LC_OBS: case_data.LC_OBS,
                             LC_INT: case_data.LC_INT,
                             LC_PDX: case_data.LC_PDX,
                             LC_DDX: case_data.LC_DDX,
-                            LC_MX: case_data.LC_MX
+                            LC_MX: case_data.LC_MX,
                         }
-                        answers['case'][case_n] = case_dict
+            else:
+                raise ValueError(f'Unknown set type: {session_model.set_type}')
 
-                else:
-                    ui.notify(f'Unknown set type: {session_model.set_type}', type='negative')
-                    print(f'Unknown set type for session {uid}: {session_model.set_type}')
-                    raise ValueError(f'Unknown set type: {session_model.set_type}')
+            logger.debug(
+                'Rendering PDF | uid={} set_type={} answer_count={}',
+                uid,
+                session_model.set_type,
+                len(answers['case']),
+            )
+            report_path = create_answer_pdf(answers, draft_status=False)
+            if not report_path:
+                raise ValueError('PDF generator returned no output path')
 
-                print(f'\nComplete dump of ANSWER data: {answers}')
+            report_path = Path(report_path)
+            if not report_path.is_file():
+                raise FileNotFoundError(f'Generated PDF not found: {report_path}')
+            db.mark_pdf_created(uid)
+            return report_path
 
-                report_fp = create_answer_pdf(answers, draft_status=False)
-                print(f'Generated PDF path: {report_fp}')
-
-                if not report_fp:
-                    raise ValueError('PDF generator returned no output path')
-
-                report_path = str(report_fp)
-                if not os.path.exists(report_path):
-                    raise FileNotFoundError(f'Generated PDF not found: {report_path}')
-
-                ui.download(report_path)
+        def generate_pdf_for_session(session):
+            """Generate and download one PDF without retaining a server copy."""
+            report_path = None
+            try:
+                ui.notify('PDF generation started', type='positive')
+                report_path = create_pdf_for_session(session)
+                pdf_content = report_path.read_bytes()
+                ui.download(pdf_content, filename=report_path.name, media_type='application/pdf')
+                logger.info('PDF downloaded | uid={} filename={}', session['uid'], report_path.name)
                 ui.notify('PDF ready: download started', type='positive')
+                refresh_table()
+            except Exception as error:
+                ui.notify(f'Error generating PDF: {error}', type='negative')
+                logger.exception('PDF generation failed | uid={}', session.get('uid', 'unknown'))
+            finally:
+                if report_path is not None:
+                    report_path.unlink(missing_ok=True)
 
-            except Exception as e:
-                ui.notify(f'Error generating PDF: {str(e)}', type='negative')
-                print(f'Error generating PDF for session {session.get("uid", "unknown")}: {str(e)}')
+        def show_bulk_print_dialog():
+            sessions = list(selected_sessions['rows'])
+            if not sessions:
+                ui.notify('Select at least one session', type='warning')
+                return
+
+            with ui.dialog() as dialog, ui.card().classes('w-96'):
+                ui.label('Download selected PDFs').classes('text-h6')
+                ui.label(f'{len(sessions)} PDFs will be included in the ZIP file.')
+                filename_input = ui.input(
+                    'ZIP filename',
+                    value=f'exam_reports_{datetime.datetime.now():%Y%m%d_%H%M%S}.zip',
+                ).classes('w-full')
+                ui.label('Your browser will ask where to save the download.').classes('text-caption text-grey-7')
+
+                with ui.row().classes('w-full justify-end'):
+                    ui.button('Cancel', on_click=dialog.close).props('flat')
+
+                    def download_zip():
+                        archive_name = get_safe_filename(str(filename_input.value or '').strip())
+                        if not archive_name:
+                            ui.notify('Enter a ZIP filename', type='warning')
+                            return
+                        if not archive_name.lower().endswith('.zip'):
+                            archive_name += '.zip'
+
+                        generated_paths = []
+                        try:
+                            archive_buffer = io.BytesIO()
+                            archive_names = set()
+                            with zipfile.ZipFile(archive_buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
+                                for index, session in enumerate(sessions, start=1):
+                                    report_path = create_pdf_for_session(session)
+                                    generated_paths.append(report_path)
+                                    entry_name = report_path.name
+                                    if entry_name in archive_names:
+                                        entry_name = f'{index}_{entry_name}'
+                                    archive_names.add(entry_name)
+                                    archive.write(report_path, arcname=entry_name)
+
+                            ui.download(
+                                archive_buffer.getvalue(),
+                                filename=archive_name,
+                                media_type='application/zip',
+                            )
+                            logger.info('PDF ZIP downloaded | session_count={} filename={}', len(sessions), archive_name)
+                            ui.notify('ZIP ready: download started', type='positive')
+                            dialog.close()
+                            refresh_table()
+                        except Exception as error:
+                            ui.notify(f'Error creating ZIP: {error}', type='negative')
+                            logger.exception('Bulk PDF generation failed | session_count={}', len(sessions))
+                        finally:
+                            for report_path in generated_paths:
+                                report_path.unlink(missing_ok=True)
+
+                    ui.button('Download ZIP', icon='download', on_click=download_zip).props('color=primary')
+
+            dialog.open()
         
         def show_view_answers_dialog(session):
             """Display student answers/responses for the selected session"""
             uid = session['uid']
-            set_type = session['set_type']
+            session_model = db.get_session_by_uid(uid)
+            if session_model is None:
+                ui.notify(f'Session not found: {uid}', type='negative')
+                return
+            session_data = session_model.model_dump()
+            set_type = session_data['set_type']
 
             def as_bool(value) -> bool:
                 if isinstance(value, bool):
@@ -537,41 +668,75 @@ def sessions_page():
                 if text in {'0', 'false', 'f', 'no', 'n', ''}:
                     return False
                 return False
+
+            def reload_answers():
+                dialog.close()
+                show_view_answers_dialog(session)
             
             with ui.dialog().props('maximized') as dialog, ui.card().classes('w-full h-full'):
                 with ui.column().classes('w-full h-full gap-4 p-4'):
                     # Header with close button
                     with ui.row().classes('w-full items-center justify-between'):
                         ui.label('Student Answers').classes('text-h5')
-                        ui.button(icon='close', on_click=dialog.close).props('flat round')
+                        with ui.row().classes('items-center gap-1'):
+                            ui.button(icon='refresh', on_click=reload_answers).props('flat round').tooltip('Reload answers')
+                            ui.button(icon='close', on_click=dialog.close).props('flat round').tooltip('Close')
                     
                     # Summary information card
                     with ui.card().classes('w-full'):
                         ui.label('Session Summary').classes('text-h6 mb-2')
                         with ui.grid(columns=2).classes('w-full gap-2'):
                             ui.label('Student:').classes('font-bold')
-                            ui.label(session['username'])
+                            ui.label(session_data['username'])
                             ui.label('Set Type:').classes('font-bold')
-                            ui.label(session['set_type'])
+                            ui.label(session_data['set_type'])
                             ui.label('Set Name:').classes('font-bold')
-                            ui.label(session['set_name'])
+                            ui.label(session_data['set_name'])
                             ui.label('Start Time:').classes('font-bold')
-                            ui.label(session['start_dt'])
+                            ui.label(format_session_dt(session_data['start_dt']))
+                            ui.label('Final Time:').classes('font-bold')
+                            final_dt_input = ui.input(
+                                value=datetime_input_value(session_data['final_dt'])
+                            ).props('type=datetime-local step=1').classes('w-full')
+                            ui.label('PDF:').classes('font-bold')
+                            pdf_check = ui.checkbox(value=session_data['pdf'])
+                            ui.label('PDF Created:').classes('font-bold')
+                            pdf_dt_input = ui.input(
+                                value=datetime_input_value(session_data['pdf_dt'])
+                            ).props('type=datetime-local step=1').classes('w-full')
+
+                        def save_tracking():
+                            try:
+                                db.update_session_tracking(
+                                    uid,
+                                    normalise_datetime_input(final_dt_input.value),
+                                    pdf_check.value,
+                                    normalise_datetime_input(pdf_dt_input.value),
+                                )
+                                ui.notify('Session tracking updated', type='positive')
+                                refresh_table()
+                            except Exception as error:
+                                ui.notify(f'Error: {error}', type='negative')
+
+                        ui.button(
+                            'Save tracking', icon='save', on_click=save_tracking
+                        ).props('color=primary')
                     
                     try:
                         # Get answers from database
                         answers = db.get_answers_obj_by_uid(uid)
 
                         
-                        # Debug output
-                        print(f"[DEBUG] Answers returned: {answers}")
-                        print(f"[DEBUG] Session UID: {uid}, Type: {set_type}")
-                        
                         if not answers or 'case' not in answers:
                             ui.label('No answers found for this session').classes('text-grey-6')
-                            print(f"[DEBUG] No answers - answers is: {answers}")
+                            logger.debug('No answers found | uid={} set_type={}', uid, set_type)
                         else:
-                            print(f"[DEBUG] Found {len(answers.get('case', {}))} cases")
+                            logger.debug(
+                                'Answers loaded | uid={} set_type={} case_count={}',
+                                uid,
+                                set_type,
+                                len(answers.get('case', {})),
+                            )
                             
                             # Store UI references for saving
                             ui_refs = {}
@@ -692,7 +857,7 @@ def sessions_page():
                                         ui.notify('Changes saved successfully', type='positive')
                                     except Exception as e:
                                         ui.notify(f'Error saving changes: {str(e)}', type='negative')
-                                        logger.error(f'Error saving changes for session {uid}: {str(e)}')
+                                        logger.exception('Failed to save changes | uid={}', uid)
                                 
                                 ui.button('Save Changes', on_click=save_changes).props('color=primary')
                                 def generate_pdf_and_close() -> None:
@@ -703,7 +868,7 @@ def sessions_page():
                     
                     except Exception as e:
                         ui.label(f'Error loading answers: {str(e)}').classes('text-red')
-                        logger.error(f'Error loading answers for session {uid}: {str(e)}')
+                        logger.exception('Failed to load answers | uid={}', uid)
             
             dialog.open()
         
@@ -738,15 +903,27 @@ def sessions_page():
             dialog.open()
         
         def show_edit_session_dialog(session):
+            session_model = db.get_session_by_uid(session['uid'])
+            if session_model is None:
+                ui.notify(f'Session not found: {session["uid"]}', type='negative')
+                return
+            session_data = session_model.model_dump()
             with ui.dialog() as dialog, ui.card().classes('w-96'):
                 ui.label('Edit Session').classes('text-h6')
                 ui.label(f'UID: {session["uid"]}').classes('text-sm text-grey-7')
                 
-                username_input = ui.input('Username', value=session['username']).classes('w-full')
-                set_name_input = ui.input('Set Name', value=session['set_name']).classes('w-full')
-                set_type_select = ui.select(['RR', 'LC'], label='Set Type', value=session['set_type']).classes('w-full')
-                device_input = ui.input('Device Name', value=session['device_name']).classes('w-full')
-                finalised_check = ui.checkbox('Finalised', value=session['finalised'] == '✓')
+                username_input = ui.input('Username', value=session_data['username']).classes('w-full')
+                set_name_input = ui.input('Set Name', value=session_data['set_name']).classes('w-full')
+                set_type_select = ui.select(['RR', 'LC'], label='Set Type', value=session_data['set_type']).classes('w-full')
+                device_input = ui.input('Device Name', value=session_data['device_name']).classes('w-full')
+                finalised_check = ui.checkbox('Finalised', value=session_data['finalised'])
+                final_dt_input = ui.input(
+                    'Final Time', value=datetime_input_value(session_data['final_dt'])
+                ).props('type=datetime-local step=1').classes('w-full')
+                pdf_check = ui.checkbox('PDF', value=session_data['pdf'])
+                pdf_dt_input = ui.input(
+                    'PDF Created', value=datetime_input_value(session_data['pdf_dt'])
+                ).props('type=datetime-local step=1').classes('w-full')
                 
                 with ui.row().classes('w-full justify-end'):
                     ui.button('Cancel', on_click=dialog.close).props('flat')
@@ -754,11 +931,15 @@ def sessions_page():
                     def update_session():
                         try:
                             # Update session in database
-                            query = """UPDATE sessions 
-                                      SET username=?, set_name=?, set_type=?, device_name=?, finalised=? 
+                            query = """UPDATE sessions
+                                      SET username=?, set_name=?, set_type=?, device_name=?, finalised=?,
+                                          final_dt=?, pdf=?, pdf_dt=?
                                       WHERE uid=?"""
                             params = (username_input.value, set_name_input.value, set_type_select.value,
-                                     device_input.value, 1 if finalised_check.value else 0, session['uid'])
+                                     device_input.value, 1 if finalised_check.value else 0,
+                                     normalise_datetime_input(final_dt_input.value),
+                                     1 if pdf_check.value else 0,
+                                     normalise_datetime_input(pdf_dt_input.value), session['uid'])
                             db.execute_param_query(query, params, txt='Update session')
                             
                             ui.notify('Session updated', type='positive')
@@ -771,31 +952,40 @@ def sessions_page():
             
             dialog.open()
         
-        def show_delete_session_dialog(session):
+        def show_delete_sessions_dialog(sessions):
+            sessions = list(sessions)
+            if not sessions:
+                ui.notify('Select at least one session', type='warning')
+                return
+
+            session_count = len(sessions)
             with ui.dialog() as dialog, ui.card():
-                ui.label('Delete Session?').classes('text-h6')
-                ui.label(f'Are you sure you want to delete session {session["uid"]}?').classes('mb-4')
-                ui.label('This will also delete all associated RR and LC answers!').classes('text-red mb-4')
+                ui.label('Delete selected sessions?').classes('text-h6')
+                ui.label(
+                    f'Permanently delete all {session_count} selected '
+                    f'{"session" if session_count == 1 else "sessions"}?'
+                ).classes('mb-2')
+                ui.label('All associated RR and LC answers will also be deleted.').classes('text-red mb-4')
                 
                 with ui.row().classes('w-full justify-end'):
                     ui.button('Cancel', on_click=dialog.close).props('flat')
                     
-                    def delete_session():
+                    def delete_sessions():
                         try:
-                            # Delete associated answers first
-                            db.execute_param_query("DELETE FROM rr_answers WHERE uid=?", (session['uid'],), txt='Delete RR answers')
-                            db.execute_param_query("DELETE FROM lc_answers WHERE uid=?", (session['uid'],), txt='Delete LC answers')
-                            db.execute_param_query("DELETE FROM sessions WHERE uid=?", (session['uid'],), txt='Delete session')
-                            
-                            ui.notify('Session deleted', type='positive')
+                            deleted_count = db.delete_sessions([session['uid'] for session in sessions])
+                            ui.notify(f'{deleted_count} session(s) deleted', type='positive')
                             dialog.close()
                             refresh_table()
-                        except Exception as e:
-                            ui.notify(f'Error: {str(e)}', type='negative')
+                        except Exception as error:
+                            ui.notify(f'Error: {error}', type='negative')
+                            logger.exception('Bulk session deletion failed | session_count={}', session_count)
                     
-                    ui.button('Delete', on_click=delete_session).props('color=negative')
+                    ui.button('Delete all selected', icon='delete', on_click=delete_sessions).props('color=negative')
             
             dialog.open()
+
+        def show_delete_session_dialog(session):
+            show_delete_sessions_dialog([session])
 
 
 # ==================== RR ANSWERS PAGE ====================
@@ -1169,10 +1359,15 @@ def lc_answers_page():
 
 
 # ==================== RUN SERVER ====================
-ui.run(
-    title='Exam Admin Dashboard',
-    port=8080,
-    reload=False,
-    show=True,
-    storage_secret='exam-admin-secret-key-change-in-production'
-)
+def main() -> None:
+    ui.run(
+        title='Exam Admin Dashboard',
+        port=8080,
+        reload=False,
+        show=True,
+        storage_secret='exam-admin-secret-key-change-in-production'
+    )
+
+
+if __name__ == '__main__':
+    main()

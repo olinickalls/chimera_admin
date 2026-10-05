@@ -9,9 +9,8 @@ from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER
-from random import choice, randint
 from datetime import datetime
-from serverconstants import (
+from .server_constants import (
     TEMP_REPORT_SUBDIR,
     DEBUG_REPORT,
     RR_NORMAL,
@@ -30,7 +29,9 @@ from serverconstants import (
     LC_MX_TITLE
 )
 from pathlib import Path
-from utils import get_safe_filename
+from .utils import get_safe_filename
+from .log_system import logger
+from xml.sax.saxutils import escape
 import os
 
 
@@ -39,6 +40,11 @@ def reformat(strtxt: str):
     Convert the Python '\n' to '<br/>\n' which report lab understands
     '''
     return strtxt.replace('\n', '<br/>\n')
+
+
+def device_header_line(answers) -> str:
+    device_name = escape(str(answers.get('device_name', '')))
+    return f'Device: <font name="Courier">{device_name}</font>'
 
 
 def create_answer_pdf(answers, draft_status=False):
@@ -52,19 +58,21 @@ def create_answer_pdf(answers, draft_status=False):
                         'case': {}
                         }    '''
     if DEBUG_REPORT:
-        print("[create_answer_pdf]")
-        print(f"\tType:{answers['type']}")
-        print(f"\tset_id:{answers['set_id']}")
-        print(f"\tset_name:{answers['set_name']}")
-        print(f"\tcandidate_ID:{answers['candidateID']}")
-        print(f"\tNo. Cases:{len(answers['case'])}")
+        logger.debug(
+            'Creating answer PDF | type={} set_id={} set_name={} candidate={} case_count={}',
+            answers.get('type'),
+            answers.get('set_id'),
+            answers.get('set_name'),
+            answers.get('candidateID'),
+            len(answers.get('case', {})),
+        )
 
     if answers['type'] == 'RR':
         pathPDF = create_rapids_pdf(answers, draft_status)
     elif answers['type'] == 'LC':
         pathPDF = create_longcase_pdf(answers, draft_status)
     else:
-        print(f'[create_answer_pdf] Unknown set_id type: {answers["type"]}')
+        logger.error('Cannot create answer PDF | unknown type={}', answers['type'])
         return None
     return pathPDF
 
@@ -154,6 +162,17 @@ def create_rapids_pdf(answers, draft=False, show_PDF=False):
         row.append(10 * ' ')
         data.append(row)
 
+    # If no asnwer data -ie case started but no answer data sent, 'no data' entry to
+    # make the blank table without error.
+    if len(answers['case'])<1:
+        # No answers in data. Record a 'no response' row.
+        row = []
+        row.append('-')
+        row.append(Paragraph('no data', PARA_STYLE))
+        row.append(Paragraph('no data', PARA_STYLE))
+        row.append(10 * ' ')
+        data.append(row)
+
     t = Table(data,
               colWidths=[0.3*inch, 0.9*inch, 5.7*inch, 0.5*inch],
               style=[  # ALL cells grey border
@@ -165,7 +184,8 @@ def create_rapids_pdf(answers, draft=False, show_PDF=False):
 
     story = []
     story.append(Paragraph(f"""Rapids Marksheet {dt_str}<br/>
-                            Set: {set_name}\t\tUser: {candidate_ID}""", h3))
+                            Set: {set_name}\t\tUser: {candidate_ID}<br/>
+                            {device_header_line(answers)}""", h3))
     story.append(t)
 
     SimpleDocTemplate(str(report_fp),
@@ -224,7 +244,10 @@ def create_longcase_pdf(answers, draft=False, show_PDF=False):
     # Paragraph creation - one Para per LC answer segment.
     # Titles and Section Headers
     top = Paragraph(f'Long Case Answer Sheet {dt_str}', style=title)
-    top_data = Paragraph(f'Set: {set_name}\t\tUser: {candidate_ID}', subtitle)
+    top_data = Paragraph(
+        f'Set: {set_name}\t\tUser: {candidate_ID}<br/>{device_header_line(answers)}',
+        subtitle,
+    )
 
     for case_n, case_id in enumerate(answers['case'], start=1):
         obs_head = Paragraph(f'{case_n}.1 {LC_OBS_TITLE}', head_sty)
@@ -324,4 +347,3 @@ def get_lc_case_answer(OBStxt: str | None = None,
         LC_MX: MXtxt
     }
     return case_dict
-
