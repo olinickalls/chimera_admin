@@ -1,36 +1,28 @@
-from .server_constants import (
-    DEFAULT_DB_PATH,
-    RR_NORMAL,
-    RR_ABNORMAL,
-    RR_DESC
-)
-from pathlib import Path
-import sqlite3
-from sqlite3 import Error
-from . import server_report as report
-import uuid
 import datetime
 import pprint
-from typing import Optional
+import sqlite3
+import uuid
+from pathlib import Path
+from sqlite3 import Error
 
+from . import server_report as report
 from .log_system import logger
-
 from .pydantic_models import (
-    # RR_Ans,  # Can this be removed?
+    Finalise_Session_Detail,
+    LC_Ans_bare,
+    LC_Set,
     RR_Ans_bare,
     RR_Set,
-    LC_Set,
-    LC_Ans_bare,
     Session,
-    Finalise_Session_Detail
 )
+from .server_constants import DEFAULT_DB_PATH, RR_ABNORMAL, RR_DESC, RR_NORMAL
 
 pp = pprint.PrettyPrinter(indent=4)
 
 
 # Manage the server DB interactions
 
-class chimera_server_db():
+class ChimeraServerDB:
     def __init__(self, db_file,
                  test_on_start=True,
                  clean_start=False):
@@ -81,7 +73,7 @@ class chimera_server_db():
                                         "id INTEGER PRIMARY KEY, "
                                         "uid TEXT NOT NULL, "
                                         "username TEXT NOT NULL, "
-                                        "set_name INTEGER NOT NULL, "
+                                        "set_name TEXT NOT NULL, "
                                         "set_type TEXT NOT NULL, "
                                         "device_name TEXT NOT NULL, "
                                         "start_dt TEXT NOT NULL,"
@@ -130,12 +122,68 @@ class chimera_server_db():
             self.connection = sqlite3.connect(self.db_fp)
             self.cursor = self.connection.cursor()
             logger.info(f'***[DB]*** Connected to DB {self.db_fp}')
+            self._migrate_sessions_set_name_type()
             self._migrate_sessions_pdf_tracking()
             self._migrate_sessions_final_tracking()
         except Error as e:
             logger.error(f"The error '{e}' occurred")
         except Exception as e:
             logger.error(f"The Exception '{e}' occurred")
+
+    def _migrate_sessions_set_name_type(self):
+        """Ensure legacy integer-typed set_name columns are stored as text."""
+        columns = {
+            row[1]: row for row in self.connection.execute('PRAGMA table_info(sessions)')
+        }
+        if 'set_name' not in columns:
+            return
+
+        set_name_info = columns['set_name']
+        if set_name_info[2].upper() == 'TEXT':
+            return
+
+        logger.warning('Migrating legacy sessions.set_name column from INTEGER to TEXT')
+        self.connection.execute('ALTER TABLE sessions RENAME TO sessions_legacy')
+        self.connection.execute(
+            """
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY,
+                uid TEXT NOT NULL,
+                username TEXT NOT NULL,
+                set_name TEXT NOT NULL,
+                set_type TEXT NOT NULL,
+                device_name TEXT NOT NULL,
+                start_dt TEXT NOT NULL,
+                finalised INTEGER NOT NULL,
+                final_dt TIMESTAMP NULL,
+                pdf INTEGER NOT NULL DEFAULT 0,
+                pdf_dt TIMESTAMP NULL
+            )
+            """
+        )
+        self.connection.execute(
+            """
+            INSERT INTO sessions (
+                id, uid, username, set_name, set_type, device_name, start_dt,
+                finalised, final_dt, pdf, pdf_dt
+            )
+            SELECT
+                id,
+                uid,
+                username,
+                CAST(set_name AS TEXT),
+                set_type,
+                device_name,
+                start_dt,
+                finalised,
+                CAST(NULL AS TIMESTAMP) AS final_dt,
+                0 AS pdf,
+                CAST(NULL AS TIMESTAMP) AS pdf_dt
+            FROM sessions_legacy
+            """
+        )
+        self.connection.execute('DROP TABLE sessions_legacy')
+        self.connection.commit()
 
     def _migrate_sessions_pdf_tracking(self):
         """Add PDF tracking columns to databases created by older versions."""
@@ -667,7 +715,7 @@ class chimera_server_db():
         results = self.fetch_all_as_dict(reply)
         return self._validate_session_records(results)
 
-    def get_session_by_uid(self, uid: str) -> Optional[Session]:
+    def get_session_by_uid(self, uid: str) -> Session | None:
         query = '''
          SELECT uid, username, set_name, set_type, device_name, start_dt, finalised,
              final_dt, pdf, pdf_dt
@@ -786,7 +834,7 @@ class chimera_server_db():
             logger.error(f'A SQL error occurred: {e}')
         
         # Convert rows to list of dictionaries
-        result = [dict(zip(column_names, row)) for row in rows]
+        result = [dict(zip(column_names, row, strict=False)) for row in rows]
         
         return result
 
@@ -934,7 +982,7 @@ class chimera_server_db():
             n_list.append(item)
         return n_list
 
-    def get_rr_case_model(self, uid: str, case_n: int) -> Optional[RR_Ans_bare]:
+    def get_rr_case_model(self, uid: str, case_n: int) -> RR_Ans_bare | None:
         query = '''
         SELECT case_number, rr_normal, rr_abnormal, rr_desc
         FROM rr_answers
@@ -949,7 +997,7 @@ class chimera_server_db():
             logger.error(f'Error loading RR case uid={uid} case={case_n}: {exc}')
             return None
 
-    def get_lc_case_model(self, uid: str, case_n: int) -> Optional[LC_Ans_bare]:
+    def get_lc_case_model(self, uid: str, case_n: int) -> LC_Ans_bare | None:
         query = '''
         SELECT case_number, LC_OBS, LC_INT, LC_PDX, LC_DDX, LC_MX
         FROM lc_answers
@@ -963,6 +1011,9 @@ class chimera_server_db():
         except Exception as exc:
             logger.error(f'Error loading LC case uid={uid} case={case_n}: {exc}')
             return None
+
+
+chimera_server_db = ChimeraServerDB
 
 
 def random_uid():

@@ -20,6 +20,8 @@ logs/
 build/
 dist/
 .pytest_cache/
+temp_report_pdfs/
+
 
 #VS Code workspace
 examadmin.code-workspace

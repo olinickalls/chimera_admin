@@ -1,8 +1,9 @@
 """
 Server reporting module
 """
-import random
 import datetime
+import random
+
 
 def generate_fake_rr_answers():
     """Generate fake RR answers for testing"""

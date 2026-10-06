@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from chimera_exam_admin.server_db import chimera_server_db
+from chimera_exam_admin.server_db import ChimeraServerDB
 from chimera_exam_admin.utils import matches_pdf_filter
 
 
@@ -17,7 +17,7 @@ class AdminPdfTrackingTests(unittest.TestCase):
                 id INTEGER PRIMARY KEY,
                 uid TEXT NOT NULL,
                 username TEXT NOT NULL,
-                set_name TEXT NOT NULL,
+                set_name INTEGER NOT NULL,
                 set_type TEXT NOT NULL,
                 device_name TEXT NOT NULL,
                 start_dt TEXT NOT NULL,
@@ -27,12 +27,12 @@ class AdminPdfTrackingTests(unittest.TestCase):
         connection.execute(
             """INSERT INTO sessions
                (uid, username, set_name, set_type, device_name, start_dt, finalised)
-               VALUES ('session-1', 'candidate', 'set', 'RR', 'device',
+               VALUES ('session-1', 'candidate', 42, 'RR', 'device',
                        '2026-09-28T14:00:00', 0)"""
         )
         connection.commit()
         connection.close()
-        self.database = chimera_server_db(
+        self.database = ChimeraServerDB(
             self.db_path, test_on_start=False, clean_start=False
         )
 
@@ -45,6 +45,7 @@ class AdminPdfTrackingTests(unittest.TestCase):
             row[1]: row
             for row in self.database.connection.execute("PRAGMA table_info(sessions)")
         }
+        self.assertEqual(columns["set_name"][2], "TEXT")
         self.assertEqual(columns["pdf"][3], 1)
         self.assertEqual(columns["pdf"][4], "0")
         self.assertIn("pdf_dt", columns)
@@ -55,6 +56,7 @@ class AdminPdfTrackingTests(unittest.TestCase):
         self.assertEqual(columns["final_dt"][3], 0)
 
         session = self.database.query_all_sessions()[0]
+        self.assertEqual(session["set_name"], "42")
         self.assertIsNone(session["final_dt"])
         self.assertFalse(session["pdf"])
         self.assertIsNone(session["pdf_dt"])
@@ -76,6 +78,17 @@ class AdminPdfTrackingTests(unittest.TestCase):
         self.assertEqual(session.final_dt, "2026-09-28T14:15:00")
         self.assertTrue(session.pdf)
         self.assertEqual(session.pdf_dt, "2026-09-28T14:30:00")
+
+    def test_create_session_uses_text_set_name(self):
+        uid = self.database.create_session(
+            username="alice",
+            set_type="LC",
+            set_name="Long Case 10",
+            device_name="tablet",
+            start_dt="2026-09-29T10:00:00",
+        )
+        stored = self.database.get_session_by_uid(uid)
+        self.assertEqual(stored.set_name, "Long Case 10")
 
     def test_pdf_filter_matches_yes_no_and_all(self):
         created = {"pdf": True}

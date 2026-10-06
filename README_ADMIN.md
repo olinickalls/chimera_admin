@@ -28,6 +28,8 @@ The dashboard will automatically open in your default browser at `http://localho
 ## Development
 
 ```bash
+uv sync --dev
+uv run ruff check src tests
 uv run python -m unittest discover -s tests   # run tests
 uv build                                      # build wheel + sdist into dist/
 ```

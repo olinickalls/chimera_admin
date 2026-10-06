@@ -1,21 +1,8 @@
+
 from pydantic import BaseModel
-from typing import Dict, Optional
-
-# # For when a single RR case is sent
-# class RR_Ans(BaseModel):
-#     candidateID: str
-#     device_name: str
-#     start_time: str
-#     set_name: str
-#     case_n: int
-#     RR_Normal: bool
-#     RR_Abnormal: bool
-#     RR_Desc: str
-#     uid: str
 
 
-# Sub-part of the whole RR_SET
-class RR_Ans_bare(BaseModel):
+class RRAnsBare(BaseModel):
     uid: str
     case_n: int
 
@@ -24,14 +11,12 @@ class RR_Ans_bare(BaseModel):
     RR_Desc: str
 
 
-# RR_Ans query for single answer
-class RR_Ans_Query(BaseModel):
+class RRAnsQuery(BaseModel):
     uid: str
     case_n: int
 
 
-# A whole RR SET answer in one
-class RR_Set(BaseModel):
+class RRSet(BaseModel):
     uid: str
     candidateID: str
     device_name: str
@@ -39,12 +24,11 @@ class RR_Set(BaseModel):
     set_name: str
     set_id: int
 
-    case: Dict[int, RR_Ans_bare]
+    case: dict[int, RRAnsBare]
     type: str
 
 
-# Sub-part of the whole LC_SET
-class LC_Ans_bare(BaseModel):
+class LCAnsBare(BaseModel):
     uid: str
     case_n: int
 
@@ -55,8 +39,7 @@ class LC_Ans_bare(BaseModel):
     LC_MX: str
 
 
-# A whole LC SET answer in one
-class LC_Set(BaseModel):
+class LCSet(BaseModel):
     uid: str
     candidateID: str
     device_name: str
@@ -64,10 +47,10 @@ class LC_Set(BaseModel):
     set_name: str
     set_id: int
 
-    case: Dict[int, LC_Ans_bare]
+    case: dict[int, LCAnsBare]
     type: str
 
-# session model- one per started exam session
+
 class Session(BaseModel):
     uid: str
     username: str
@@ -76,22 +59,34 @@ class Session(BaseModel):
     device_name: str
     start_dt: str
     finalised: bool
-    final_dt: Optional[str] = None
+    final_dt: str | None = None
     pdf: bool = False
-    pdf_dt: Optional[str] = None
+    pdf_dt: str | None = None
 
-class New_Session_Data(BaseModel):
+
+class NewSessionData(BaseModel):
     username: str
     set_name: str
     set_type: str
     device_name: str
     start_dt: str
 
-class Finalise_Session_Detail(BaseModel):
+
+class FinaliseSessionDetail(BaseModel):
     uid: str
     username: str
     set_name: str
     set_type: str
     device_name: str
+
+
+# Backwards-compatible aliases for legacy imports.
+RR_Ans_bare = RRAnsBare
+RR_Ans_Query = RRAnsQuery
+RR_Set = RRSet
+LC_Ans_bare = LCAnsBare
+LC_Set = LCSet
+New_Session_Data = NewSessionData
+Finalise_Session_Detail = FinaliseSessionDetail
 
 

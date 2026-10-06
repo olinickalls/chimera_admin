@@ -1,38 +1,35 @@
-from reportlab.platypus import (
-    Table,
-    Paragraph,
-    SimpleDocTemplate,
-    PageBreak
-)
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER
+import os
 from datetime import datetime
+from pathlib import Path
+from xml.sax.saxutils import escape
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Table
+
+from .log_system import logger
 from .server_constants import (
-    TEMP_REPORT_SUBDIR,
+    ANS_BLANK,
     DEBUG_REPORT,
-    RR_NORMAL,
+    LC_DDX,
+    LC_DDX_TITLE,
+    LC_INT,
+    LC_INT_TITLE,
+    LC_MX,
+    LC_MX_TITLE,
+    LC_OBS,
+    LC_OBS_TITLE,
+    LC_PDX,
+    LC_PDX_TITLE,
     RR_ABNORMAL,
     RR_DESC,
-    LC_OBS,
-    LC_INT,
-    LC_PDX,
-    LC_DDX,
-    LC_MX,
-    ANS_BLANK,
-    LC_OBS_TITLE,
-    LC_INT_TITLE,
-    LC_PDX_TITLE,
-    LC_DDX_TITLE,
-    LC_MX_TITLE
+    RR_NORMAL,
+    TEMP_REPORT_SUBDIR,
 )
-from pathlib import Path
 from .utils import get_safe_filename
-from .log_system import logger
-from xml.sax.saxutils import escape
-import os
 
 
 def reformat(strtxt: str):

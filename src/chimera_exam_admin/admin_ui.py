@@ -3,32 +3,31 @@ Web-based Admin Frontend for Exam Administration Database
 Built with NiceGUI - Compatible with NiceGUI 3.3+
 """
 
-from nicegui import ui
 import datetime
 import io
-import time
 import os
+import time
 import zipfile
 from pathlib import Path
-from .server_db import chimera_server_db, get_current_dt_str
-from .pydantic_models import (
-    RR_Ans_bare,
-    LC_Ans_bare,
-)
-from .log_system import logger
-from .utils import get_safe_filename, matches_pdf_filter
 
-from .server_side_report import create_answer_pdf
+from nicegui import ui
+
+from .db_service import create_database
+from .log_system import logger
+from .pydantic_models import LC_Ans_bare, RR_Ans_bare
 from .server_constants import (
-    RR_NORMAL,
+    LC_DDX,
+    LC_INT,
+    LC_MX,
+    LC_OBS,
+    LC_PDX,
     RR_ABNORMAL,
     RR_DESC,
-    LC_OBS,
-    LC_INT,
-    LC_PDX,
-    LC_DDX,
-    LC_MX
+    RR_NORMAL,
 )
+from .server_db import get_current_dt_str
+from .server_side_report import create_answer_pdf
+from .utils import get_safe_filename, matches_pdf_filter
 
 # Initialize database
 DEFAULT_DB_TARGET = Path.cwd().parent / 'examserver' / 'DB' / 'chimera_server.db'
@@ -38,7 +37,7 @@ if not DB_TARGET.is_file():
         f'Exam server database not found: {DB_TARGET}. '
         'Set EXAMADMIN_DB_TARGET to the active chimera_server.db file.'
     )
-db = chimera_server_db(DB_TARGET, test_on_start=False, clean_start=False)
+db = create_database(DB_TARGET, test_on_start=False, clean_start=False)
 
 
 # ==================== NAVIGATION ====================
@@ -189,9 +188,17 @@ def sessions_page():
 
             def update_auto_update_button_style():
                 if auto_update_state['enabled']:
-                    auto_update_button.style('background-color: var(--q-positive) !important; color: white !important; border: 1px solid var(--q-positive) !important;')
+                    auto_update_button.style(
+                        'background-color: var(--q-positive) !important; '
+                        'color: white !important; '
+                        'border: 1px solid var(--q-positive) !important;'
+                    )
                 else:
-                    auto_update_button.style('background-color: white !important; color: var(--q-primary) !important; border: 1px solid var(--q-primary) !important;')
+                    auto_update_button.style(
+                        'background-color: white !important; '
+                        'color: var(--q-primary) !important; '
+                        'border: 1px solid var(--q-primary) !important;'
+                    )
 
             def toggle_auto_update():
                 auto_update_state['enabled'] = not auto_update_state['enabled']
